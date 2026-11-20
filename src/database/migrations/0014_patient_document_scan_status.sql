@@ -1,0 +1,2 @@
+CREATE TYPE "public"."patient_document_scan_status" AS ENUM('PENDING', 'CLEAN', 'INFECTED', 'FAILED');--> statement-breakpoint
+ALTER TABLE "patient_documents" ADD COLUMN "scan_status" "patient_document_scan_status" DEFAULT 'PENDING' NOT NULL;

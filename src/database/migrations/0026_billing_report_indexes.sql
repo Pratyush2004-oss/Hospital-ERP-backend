@@ -1,0 +1,2 @@
+CREATE INDEX "invoice_refunds_tenant_refunded_idx" ON "invoice_refunds" USING btree ("tenant_id","refunded_at") WHERE "invoice_refunds"."refund_status" = 'SUCCESSFUL';--> statement-breakpoint
+CREATE INDEX "payments_tenant_received_at_idx" ON "payments" USING btree ("tenant_id","received_at");
