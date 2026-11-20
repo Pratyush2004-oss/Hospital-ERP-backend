@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import cookieParser from "cookie-parser";
 import cors from "cors";
-import express, { type Express } from "express";
-import helmet from "helmet";
+import express, { type Express, type RequestHandler } from "express";
 import { pinoHttp } from "pino-http";
 import swaggerUi from "swagger-ui-express";
 import { env } from "./config/env.js";
@@ -16,6 +16,8 @@ import { apiRouter } from "./routes/index.js";
 
 /** Requests larger than this are rejected with 413 before touching handlers. */
 const JSON_BODY_LIMIT = "1mb";
+const require = createRequire(import.meta.url);
+const helmet = require("helmet") as () => RequestHandler;
 
 /**
  * Builds the Express application without binding a port, so tests and workers
