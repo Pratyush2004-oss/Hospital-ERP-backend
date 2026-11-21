@@ -14,6 +14,7 @@ import { healthRouter } from "../modules/health/health.routes.js";
 import { doctorLeaveRouter } from "../modules/leaves/leave.routes.js";
 import { notificationRouter } from "../modules/notifications/notification.routes.js";
 import { patientRouter } from "../modules/patients/patient.routes.js";
+import { patientPortalRouter } from "../modules/patients/patient.portal.routes.js";
 import { doctorBreakRouter } from "../modules/schedules/break.routes.js";
 import { doctorScheduleRouter } from "../modules/schedules/schedule.routes.js";
 import {

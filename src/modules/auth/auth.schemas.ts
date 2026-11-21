@@ -6,7 +6,7 @@ import { passwordSchema } from "./auth.password.js";
  * index on `lower(email)`), so normalization happens before validation output
  * is handed to the service.
  */
-const emailSchema = z
+export const emailSchema = z
   .string()
   .trim()
   .min(3, "Email is required")

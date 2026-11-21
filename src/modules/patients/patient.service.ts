@@ -176,7 +176,7 @@ export function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
 }
 
-function normalizeFullName(value: string | null | undefined): string {
+export function normalizeFullName(value: string | null | undefined): string {
   const name = (value ?? "").trim().replace(/\s+/g, " ");
 
   if (name.length === 0) {
@@ -191,7 +191,7 @@ function normalizeFullName(value: string | null | undefined): string {
 }
 
 /** Accepts `YYYY-MM-DD` (or a Date) and returns the same calendar date. */
-function normalizeDateOfBirth(value: string | Date | null | undefined): string | null {
+export function normalizeDateOfBirth(value: string | Date | null | undefined): string | null {
   if (value === null || value === undefined) return null;
 
   const text = value instanceof Date ? value.toISOString().slice(0, 10) : value.trim();
@@ -215,7 +215,7 @@ function normalizeDateOfBirth(value: string | Date | null | undefined): string |
   return text;
 }
 
-function normalizeGender(value: PatientGender | null | undefined): PatientGender {
+export function normalizeGender(value: PatientGender | null | undefined): PatientGender {
   if (value === null || value === undefined) return "UNKNOWN";
 
   const gender = value.trim().toUpperCase() as PatientGender;
@@ -689,7 +689,7 @@ function renderPatientCode(format: string, sequence: number, year: number): stri
  * Numbers already present for the tenant (for example seeded MRNs) are skipped
  * by probing `patient_profiles`; soft-deleted profiles stay reserved.
  */
-async function allocatePatientCode(tx: DbExecutor, tenantId: string): Promise<string> {
+export async function allocatePatientCode(tx: DbExecutor, tenantId: string): Promise<string> {
   const format = await loadPatientCodeFormat(tx, tenantId);
   const year = new Date().getUTCFullYear();
 
