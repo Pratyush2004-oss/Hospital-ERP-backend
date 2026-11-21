@@ -62,6 +62,29 @@ const envSchema = z.object({
   AUTH_PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().min(5).max(120).default(30),
   AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).default(900_000),
   AUTH_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(10),
+
+  // Transactional authentication email (ONB-03). `none` disables delivery,
+  // `mock` records messages in memory for development/tests, and `real` sends
+  // through the configured transactional provider. Production may only use
+  // `real`; that is enforced below so mock delivery cannot be shipped silently.
+  AUTH_MAIL_PROVIDER: z.enum(["none", "mock", "real"]).default("none"),
+  AUTH_MAIL_FROM_EMAIL: z.email().default("no-reply@hospitalos.invalid"),
+  AUTH_MAIL_FROM_NAME: z.string().trim().min(1).max(120).default("HospitalOS"),
+  AUTH_MAIL_REPLY_TO: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.email().optional(),
+  ),
+  /** Server API key for the real provider (Resend). Never exposed to clients. */
+  AUTH_MAIL_RESEND_API_KEY: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(16, "must be at least 16 characters").optional(),
+  ),
+  AUTH_MAIL_API_BASE_URL: z.url().default("https://api.resend.com"),
+  AUTH_MAIL_TIMEOUT_MS: z.coerce.number().int().min(500).max(30_000).default(5_000),
+  AUTH_EMAIL_VERIFICATION_TTL_MINUTES: z.coerce.number().int().min(5).max(10_080).default(1_440),
+  AUTH_INVITATION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
+  /** Minimum interval between two verification/invitation emails to one address. */
+  AUTH_EMAIL_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(0).max(3_600).default(60),
   /** Optional bootstrap account that receives the platform super-admin role. */
   PLATFORM_SUPER_ADMIN_EMAIL: z.preprocess(
     (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
@@ -230,7 +253,80 @@ const envSchema = z.object({
     ),
   REDIS_CONNECT_TIMEOUT: z.coerce.number().int().min(0).default(5_000),
   REDIS_MAX_RETRIES: z.coerce.number().int().min(0).max(20).default(3),
+}).superRefine((value, ctx) => {
+  const issues = authMailConfigurationIssues({
+    nodeEnv: value.NODE_ENV,
+    provider: value.AUTH_MAIL_PROVIDER,
+    fromEmail: value.AUTH_MAIL_FROM_EMAIL,
+    apiKey: value.AUTH_MAIL_RESEND_API_KEY,
+    frontendUrl: value.FRONTEND_URL,
+  });
+
+  for (const message of issues) {
+    ctx.addIssue({
+      code: "custom",
+      message,
+      path: [message.startsWith("FRONTEND_URL") ? "FRONTEND_URL" : "AUTH_MAIL_PROVIDER"],
+    });
+  }
 });
+
+export interface AuthMailConfigurationInput {
+  readonly nodeEnv: "development" | "test" | "production";
+  readonly provider: "none" | "mock" | "real";
+  readonly fromEmail: string;
+  readonly apiKey: string | undefined;
+  /** Frontend origin used for emailed links. */
+  readonly frontendUrl?: string;
+}
+
+/**
+ * Pure validation of the transactional auth-mail configuration, also used by
+ * unit tests. It is applied to the parsed environment at startup.
+ *
+ * Production must send through a real provider: `none` and `mock` are rejected
+ * outright so a deployment cannot silently discard verification, reset or
+ * invitation emails. Selecting `real` always requires a provider API key and a
+ * verified-looking From address (never the `.invalid` placeholder domain).
+ */
+export function authMailConfigurationIssues(
+  config: AuthMailConfigurationInput,
+): readonly string[] {
+  const issues: string[] = [];
+
+  if (config.nodeEnv === "production" && config.provider !== "real") {
+    issues.push(
+      'AUTH_MAIL_PROVIDER must be "real" in production; authentication email cannot use mock or none delivery',
+    );
+  }
+
+  if (config.provider === "real") {
+    if (!config.apiKey) {
+      issues.push("AUTH_MAIL_RESEND_API_KEY is required when AUTH_MAIL_PROVIDER=real");
+    }
+
+    if (config.fromEmail.trim().toLowerCase().endsWith(".invalid")) {
+      issues.push(
+        "AUTH_MAIL_FROM_EMAIL must use a verified sender domain when AUTH_MAIL_PROVIDER=real",
+      );
+    }
+  }
+
+  if (config.nodeEnv === "production" && config.frontendUrl) {
+    try {
+      const frontend = new URL(config.frontendUrl);
+      if (frontend.hostname === "localhost" || frontend.hostname === "127.0.0.1") {
+        issues.push(
+          "FRONTEND_URL must be the production web origin so authentication email links resolve",
+        );
+      }
+    } catch {
+      issues.push("FRONTEND_URL must be a valid production web origin");
+    }
+  }
+
+  return issues;
+}
 
 export type Env = z.infer<typeof envSchema>;
 

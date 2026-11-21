@@ -7,12 +7,16 @@ import {
   users,
   type User,
 } from "../../database/schema/index.js";
+import { env } from "../../config/env.js";
 import { AppError } from "../../lib/http-error.js";
 import { logger } from "../../lib/logger.js";
 import { AUDIT_ACTIONS } from "../audit/audit.types.js";
 import { recordAuditStandalone } from "../audit/audit.service.js";
+import { buildAuthMailActionUrl } from "../auth-mail/auth-mail.service.js";
+import { deliverPasswordResetEmail, issueEmailVerification } from "./auth.email.service.js";
 import { burnPasswordComparison, hashPassword, verifyPassword } from "./auth.password.js";
 import {
+  AUTH_EMAIL_RESEND_COOLDOWN_MS,
   PASSWORD_RESET_TTL_MS,
   REFRESH_TOKEN_TTL_MS,
   SESSION_TOUCH_INTERVAL_MS,
@@ -76,8 +80,33 @@ export interface SessionSummary {
 }
 
 export interface PasswordResetRequestResult {
-  /** Only returned outside production, where no email provider is configured. */
+  /**
+   * Development/test convenience only. Production never exposes the raw token:
+   * it exists solely inside the emailed link.
+   */
   readonly resetToken: string | null;
+  readonly expiresAt: Date | null;
+  readonly deliveryStatus: "SENT" | "FAILED" | "SUPPRESSED" | null;
+}
+
+/**
+ * Non-consuming reset-token inspection for the frontend reset page. It tells
+ * the holder of a token whether it can still be used without revealing any
+ * account information; an unknown token is simply INVALID.
+ */
+export const PASSWORD_RESET_TOKEN_STATUSES = [
+  "VALID",
+  "INVALID",
+  "EXPIRED",
+  "USED",
+  "REVOKED",
+] as const;
+
+export type PasswordResetTokenStatus =
+  (typeof PASSWORD_RESET_TOKEN_STATUSES)[number];
+
+export interface PasswordResetTokenInspection {
+  readonly status: PasswordResetTokenStatus;
   readonly expiresAt: Date | null;
 }
 
@@ -88,6 +117,45 @@ export interface AccessTokenSession {
 }
 
 const INVALID_CREDENTIALS = "Invalid email, phone number or password";
+
+/** One message for every forgot-password outcome, known account or not. */
+export const PASSWORD_RESET_GENERIC_MESSAGE =
+  "If an account matches that email or phone number, a reset link has been sent.";
+
+export interface PasswordResetRequestResponse {
+  readonly message: string;
+  readonly resetToken?: string;
+  readonly resetUrl?: string;
+  readonly expiresAt?: string;
+}
+
+/**
+ * Shapes the forgot-password payload. Production always returns the generic
+ * message alone; only non-production environments receive token material for
+ * exercising the recovery UI without a mail provider.
+ */
+export function buildPasswordResetRequestResponse(
+  result: PasswordResetRequestResult,
+  options: {
+    readonly nodeEnv: "development" | "test" | "production";
+    readonly frontendUrl?: string;
+  } = { nodeEnv: env.NODE_ENV },
+): PasswordResetRequestResponse {
+  const base = { message: PASSWORD_RESET_GENERIC_MESSAGE };
+
+  if (options.nodeEnv === "production" || !result.resetToken) return base;
+
+  return {
+    ...base,
+    resetToken: result.resetToken,
+    resetUrl: buildAuthMailActionUrl(
+      "PASSWORD_RESET",
+      result.resetToken,
+      options.frontendUrl ?? env.FRONTEND_URL,
+    ),
+    ...(result.expiresAt ? { expiresAt: result.expiresAt.toISOString() } : {}),
+  };
+}
 
 function toPublicUser(user: User): PublicUser {
   return {
@@ -217,6 +285,14 @@ export async function registerUser(input: RegisterInput): Promise<PublicUser> {
       resourceId: created.id,
       description: "Account registered",
     });
+
+    // Registration succeeds even when mail delivery is unavailable; the user
+    // can request another verification link after signing in.
+    try {
+      await issueEmailVerification(created);
+    } catch (error) {
+      logger.warn({ userId: created.id, err: error }, "Failed to send verification email");
+    }
 
     return toPublicUser(created);
   } catch (error) {
@@ -681,19 +757,66 @@ export async function requestPasswordReset(
   const user = await findUserByIdentifier(input.identifier);
 
   if (!user || !user.isActive) {
-    return { resetToken: null, expiresAt: null };
+    return { resetToken: null, expiresAt: null, deliveryStatus: null };
+  }
+
+  const now = new Date();
+
+  // Per-account resend cooldown. The response stays identical to the unknown
+  // account path so a cooldown cannot be used to probe for accounts either.
+  if (AUTH_EMAIL_RESEND_COOLDOWN_MS > 0) {
+    const [latest] = await getDb()
+      .select({ createdAt: passwordResetTokens.createdAt })
+      .from(passwordResetTokens)
+      .where(
+        and(
+          eq(passwordResetTokens.userId, user.id),
+          isNull(passwordResetTokens.usedAt),
+          isNull(passwordResetTokens.revokedAt),
+        ),
+      )
+      .orderBy(desc(passwordResetTokens.createdAt))
+      .limit(1);
+
+    if (
+      latest &&
+      now.getTime() - latest.createdAt.getTime() < AUTH_EMAIL_RESEND_COOLDOWN_MS
+    ) {
+      return { resetToken: null, expiresAt: null, deliveryStatus: null };
+    }
   }
 
   const { token, tokenHash } = generatePasswordResetToken();
-  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+  const expiresAt = new Date(now.getTime() + PASSWORD_RESET_TTL_MS);
 
-  await getDb().insert(passwordResetTokens).values({
-    userId: user.id,
-    tokenHash,
-    expiresAt,
+  await getDb().transaction(async (tx) => {
+    // Only the newest reset link may be used.
+    await tx
+      .update(passwordResetTokens)
+      .set({ revokedAt: now })
+      .where(
+        and(
+          eq(passwordResetTokens.userId, user.id),
+          isNull(passwordResetTokens.usedAt),
+          isNull(passwordResetTokens.revokedAt),
+        ),
+      );
+
+    await tx.insert(passwordResetTokens).values({
+      userId: user.id,
+      tokenHash,
+      expiresAt,
+    });
   });
 
-  return { resetToken: token, expiresAt };
+  const delivery = await deliverPasswordResetEmail(user, token, expiresAt);
+
+  return {
+    // Never expose the raw reset token in production responses.
+    resetToken: env.NODE_ENV === "production" ? null : token,
+    expiresAt,
+    deliveryStatus: delivery.status,
+  };
 }
 
 /** Consumes a reset token, sets the new password and revokes all sessions. */
@@ -707,6 +830,7 @@ export async function resetPassword(token: string, newPassword: string): Promise
       userId: passwordResetTokens.userId,
       expiresAt: passwordResetTokens.expiresAt,
       usedAt: passwordResetTokens.usedAt,
+      revokedAt: passwordResetTokens.revokedAt,
     })
     .from(passwordResetTokens)
     .where(eq(passwordResetTokens.tokenHash, tokenHash))
@@ -715,6 +839,7 @@ export async function resetPassword(token: string, newPassword: string): Promise
   if (
     !reset ||
     reset.usedAt !== null ||
+    reset.revokedAt !== null ||
     reset.expiresAt.getTime() <= now.getTime()
   ) {
     throw AppError.badRequest("Invalid or expired password reset token");
@@ -733,7 +858,13 @@ export async function resetPassword(token: string, newPassword: string): Promise
     const [consumed] = await tx
       .update(passwordResetTokens)
       .set({ usedAt: now })
-      .where(and(eq(passwordResetTokens.id, reset.id), isNull(passwordResetTokens.usedAt)))
+      .where(
+        and(
+          eq(passwordResetTokens.id, reset.id),
+          isNull(passwordResetTokens.usedAt),
+          isNull(passwordResetTokens.revokedAt),
+        ),
+      )
       .returning({ id: passwordResetTokens.id });
 
     if (!consumed) {
@@ -745,11 +876,12 @@ export async function resetPassword(token: string, newPassword: string): Promise
     // Remaining unconsumed reset tokens for this account are retired too.
     await tx
       .update(passwordResetTokens)
-      .set({ usedAt: now })
+      .set({ revokedAt: now })
       .where(
         and(
           eq(passwordResetTokens.userId, reset.userId),
           isNull(passwordResetTokens.usedAt),
+          isNull(passwordResetTokens.revokedAt),
         ),
       );
 
@@ -787,6 +919,33 @@ export async function resetPassword(token: string, newPassword: string): Promise
     resourceId: reset.userId,
     description: "Password reset; sessions revoked",
   });
+}
+
+/**
+ * Inspects a reset token without consuming it. Used by the reset page to show
+ * invalid/expired/used states before the user types a new password.
+ */
+export async function inspectPasswordResetToken(
+  token: string,
+): Promise<PasswordResetTokenInspection> {
+  const [row] = await getDb()
+    .select({
+      expiresAt: passwordResetTokens.expiresAt,
+      usedAt: passwordResetTokens.usedAt,
+      revokedAt: passwordResetTokens.revokedAt,
+    })
+    .from(passwordResetTokens)
+    .where(eq(passwordResetTokens.tokenHash, hashToken(token)))
+    .limit(1);
+
+  if (!row) return { status: "INVALID", expiresAt: null };
+  if (row.usedAt !== null) return { status: "USED", expiresAt: row.expiresAt };
+  if (row.revokedAt !== null) return { status: "REVOKED", expiresAt: row.expiresAt };
+  if (row.expiresAt.getTime() <= Date.now()) {
+    return { status: "EXPIRED", expiresAt: row.expiresAt };
+  }
+
+  return { status: "VALID", expiresAt: row.expiresAt };
 }
 
 export async function getPublicUser(userId: string): Promise<PublicUser> {

@@ -554,6 +554,45 @@ describe("platform tenant management", () => {
   });
 });
 
+describe("platform console audit visibility", () => {
+  it("keeps platform operations protected and exposes tenant status history only in tenant scope", async () => {
+    const admin = await hospitalClient();
+    const platform = await platformClient();
+    const tenant = await registerTenant(admin.client, "Audit Scope Hospital");
+    await activateTenant(platform, tenant.tenant.id);
+    await selectTenant(admin.client, tenant.tenant.slug);
+
+    const anonymousOnPlatform = await api.get(`${API}/platform/tenants`);
+    assert.equal(anonymousOnPlatform.status, 401);
+
+    // Hospital administrators cannot use the platform plane even with a valid
+    // session and a direct URL to the management route.
+    const hospitalOnPlatform = await admin.client.get(`${API}/platform/tenants`);
+    assert.equal(hospitalOnPlatform.status, 403);
+
+    // Platform operations are visible in the hospital's own audit history.
+    const history = await admin.client.get(
+      `${API}/audit-logs?action=hospital.status_changed&limit=20`,
+    );
+    assert.equal(history.status, 200, JSON.stringify(history.body));
+    const logs = dataOf<{
+      auditLogs: Array<{ action: string; previousState: { status?: string } | null; newState: { status?: string } | null }>;
+    }>(history).auditLogs;
+    assert.ok(
+      logs.some(
+        (log) =>
+          log.newState?.status === "ACTIVE" &&
+          log.previousState?.status === "PENDING",
+      ),
+    );
+
+    // There is no platform-scoped audit API: the tenant audit routes reject a
+    // platform actor rather than exposing cross-tenant history.
+    const platformOnAudit = await platform.get(`${API}/audit-logs`);
+    assert.equal(platformOnAudit.status, 403);
+  });
+});
+
 describe("PostgreSQL row level security and pool safety", () => {
   it("limits tenant rows to the transaction-local tenant id", async () => {
     const platform = await platformClient();

@@ -30,6 +30,8 @@ export interface TenantScope {
   /** Human-readable slug for logging and URLs. */
   readonly tenantSlug: string;
   readonly membershipId: string;
+  /** Assigned branches; empty means hospital-wide access. */
+  readonly branchIds: readonly string[];
   readonly userId: string;
   readonly sessionId: string;
   readonly roles: readonly string[];

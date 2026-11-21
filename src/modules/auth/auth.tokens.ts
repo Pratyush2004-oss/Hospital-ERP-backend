@@ -60,6 +60,19 @@ export function generateRefreshToken(): { token: string; tokenHash: string } {
 }
 
 export function generatePasswordResetToken(): { token: string; tokenHash: string } {
+  return generateSingleUseToken();
+}
+
+/** Email verification and staff invitations share the reset-token rules. */
+export function generateEmailVerificationToken(): { token: string; tokenHash: string } {
+  return generateSingleUseToken();
+}
+
+export function generateInvitationToken(): { token: string; tokenHash: string } {
+  return generateSingleUseToken();
+}
+
+function generateSingleUseToken(): { token: string; tokenHash: string } {
   const token = randomBytes(32).toString("base64url");
   return { token, tokenHash: hashToken(token) };
 }

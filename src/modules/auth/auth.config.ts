@@ -12,6 +12,11 @@ export const JWT_AUDIENCE = "hospitalos-client";
 export const ACCESS_TOKEN_TTL_SECONDS = env.AUTH_ACCESS_TOKEN_TTL_SECONDS;
 export const REFRESH_TOKEN_TTL_MS = env.AUTH_REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000;
 export const PASSWORD_RESET_TTL_MS = env.AUTH_PASSWORD_RESET_TTL_MINUTES * 60 * 1000;
+export const EMAIL_VERIFICATION_TTL_MS = env.AUTH_EMAIL_VERIFICATION_TTL_MINUTES * 60 * 1000;
+export const INVITATION_TTL_MS = env.AUTH_INVITATION_TTL_HOURS * 60 * 60 * 1000;
+/** Minimum interval between repeated verification/invitation emails. */
+export const AUTH_EMAIL_RESEND_COOLDOWN_MS =
+  env.AUTH_EMAIL_RESEND_COOLDOWN_SECONDS * 1000;
 
 /**
  * bcrypt cost. 12 is roughly 250-400 ms on current server hardware. Tests use

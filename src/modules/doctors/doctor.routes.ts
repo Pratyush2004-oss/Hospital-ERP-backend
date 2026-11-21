@@ -8,6 +8,7 @@ import {
   deleteDoctorHandler,
   getDoctorHandler,
   listDoctorsHandler,
+  listEligibleDoctorMembersHandler,
   updateDoctorBranchesHandler,
   updateDoctorDepartmentsHandler,
   updateDoctorHandler,
@@ -16,6 +17,7 @@ import {
 import {
   createDoctorSchema,
   doctorIdParamsSchema,
+  eligibleDoctorMembersQuerySchema,
   listDoctorsQuerySchema,
   updateDoctorBranchesSchema,
   updateDoctorDepartmentsSchema,
@@ -47,6 +49,15 @@ doctorRouter.get(
   requirePermission("doctor:read"),
   validate({ query: listDoctorsQuerySchema }),
   listDoctorsHandler,
+);
+
+doctorRouter.get(
+  "/eligible-members",
+  authenticate,
+  requireTenant,
+  requirePermission("doctor:create"),
+  validate({ query: eligibleDoctorMembersQuerySchema }),
+  listEligibleDoctorMembersHandler,
 );
 
 doctorRouter.get(

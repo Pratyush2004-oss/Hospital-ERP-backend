@@ -49,6 +49,7 @@ export async function resolveRequestActor(request: Request): Promise<RequestActo
         tenantId: tenantContext.tenant.id,
         tenantSlug: tenantContext.tenant.slug,
         membershipId: tenantContext.membershipId,
+        branchIds: tenantContext.branchIds,
         userId: session.userId,
         sessionId: session.sessionId,
         roles: tenantContext.roles,

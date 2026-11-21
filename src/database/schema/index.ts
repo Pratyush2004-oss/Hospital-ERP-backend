@@ -80,6 +80,7 @@ export * from "./patient-code-sequences.js";
 export * from "./auth-sessions.js";
 export * from "./auth-refresh-tokens.js";
 export * from "./password-reset-tokens.js";
+export * from "./auth-email-tokens.js";
 export * from "./platform-user-roles.js";
 export * from "./appointments.js";
 export * from "./appointment-events.js";

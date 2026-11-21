@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "../../database/client.js";
+import { env } from "../../config/env.js";
 import {
   withPlatformTransaction,
   withTenantTransaction,
@@ -19,6 +20,7 @@ import {
 import { AppError } from "../../lib/http-error.js";
 import { AUDIT_ACTIONS } from "../audit/audit.types.js";
 import { recordAuditSafely, recordAuditStandalone } from "../audit/audit.service.js";
+import { deliverHospitalActivationEmail } from "../auth/auth.email.service.js";
 import { slugify, TENANT_SLUG_PATTERN } from "../../lib/slug.js";
 import { loadMembershipPermissions } from "../rbac/rbac.service.js";
 import { seedTenantRbac } from "../rbac/rbac.seed.js";
@@ -56,11 +58,38 @@ export interface UserMembershipSummary {
   readonly status: string;
   readonly joinedAt: Date | null;
   readonly createdAt: Date;
+  /** True only when both the hospital and the membership are ACTIVE. */
+  readonly selectable: boolean;
+}
+
+export interface TenantOnboardingRegistration {
+  readonly tenantId: string;
+  readonly tenantName: string;
+  readonly tenantSlug: string;
+  /** Stable, user-facing reference for the registration (the tenant id). */
+  readonly registrationReference: string;
+  readonly status: TenantStatus;
+  readonly submittedAt: Date;
+  readonly legalName: string | null;
+  readonly email: string | null;
+  readonly phone: string | null;
+  readonly timezone: string;
+  readonly membershipId: string;
+  readonly membershipStatus: string;
+  readonly joinedAt: Date | null;
+  readonly selectable: boolean;
+}
+
+export interface TenantOnboardingStatus {
+  readonly registrations: readonly TenantOnboardingRegistration[];
+  /** Configured reply-to address; null when no support address is configured. */
+  readonly supportEmail: string | null;
 }
 
 export interface TenantContextResolution {
   readonly tenant: TenantSummary;
   readonly membershipId: string;
+  readonly branchIds: readonly string[];
   readonly roles: readonly string[];
   readonly permissions: ReadonlySet<string>;
 }
@@ -321,8 +350,53 @@ export async function listUserMemberships(userId: string): Promise<readonly User
       .where(eq(tenantMemberships.userId, userId))
       .orderBy(asc(tenants.name));
 
-    return rows;
+    return rows.map((row) => ({
+      ...row,
+      selectable: row.tenantStatus === "ACTIVE" && row.status === "ACTIVE",
+    }));
   });
+}
+
+/**
+ * Registration/onboarding view for the signed-in account only. Runs with the
+ * user's own RLS context, so the join can only return hospitals where the user
+ * holds a membership. No approval notes or platform-only fields are selected.
+ */
+export async function getUserOnboardingStatus(
+  userId: string,
+): Promise<TenantOnboardingStatus> {
+  const registrations = await withTransactionContext({ userId }, async (tx) => {
+    const rows = await tx
+      .select({
+        tenantId: tenants.id,
+        tenantName: tenants.name,
+        tenantSlug: tenants.slug,
+        status: tenants.status,
+        submittedAt: tenants.createdAt,
+        legalName: tenants.legalName,
+        email: tenants.email,
+        phone: tenants.phone,
+        timezone: tenants.timezone,
+        membershipId: tenantMemberships.id,
+        membershipStatus: tenantMemberships.status,
+        joinedAt: tenantMemberships.joinedAt,
+      })
+      .from(tenantMemberships)
+      .innerJoin(tenants, eq(tenantMemberships.tenantId, tenants.id))
+      .where(eq(tenantMemberships.userId, userId))
+      .orderBy(desc(tenants.createdAt));
+
+    return rows.map((row) => ({
+      ...row,
+      registrationReference: row.tenantId,
+      selectable: row.status === "ACTIVE" && row.membershipStatus === "ACTIVE",
+    }));
+  });
+
+  return {
+    registrations,
+    supportEmail: env.AUTH_MAIL_REPLY_TO ?? null,
+  };
 }
 
 /**
@@ -354,7 +428,7 @@ export async function resolveTenantContext(
     if (!tenant) return null;
 
     const [membership] = await tx
-      .select({ id: tenantMemberships.id })
+      .select({ id: tenantMemberships.id, branchIds: tenantMemberships.branchIds })
       .from(tenantMemberships)
       .where(
         and(
@@ -372,6 +446,7 @@ export async function resolveTenantContext(
     return {
       tenant: tenantSummary(tenant),
       membershipId: membership.id,
+      branchIds: membership.branchIds,
       roles: resolved.roles,
       permissions: resolved.permissions,
     };
@@ -508,7 +583,7 @@ export async function setTenantStatus(
   tenantId: string,
   status: "ACTIVE" | "SUSPENDED",
 ): Promise<TenantSummary> {
-  return withPlatformTransaction(async (tx) => {
+  const result = await withPlatformTransaction(async (tx) => {
     const [previous] = await tx
       .select({ status: tenants.status })
       .from(tenants)
@@ -546,6 +621,14 @@ export async function setTenantStatus(
       newState: { status: tenant.status },
     });
 
-    return tenantSummary(tenant);
+    return { tenant: tenantSummary(tenant), previousStatus: previous?.status ?? null };
   });
+
+  // A PENDING -> ACTIVE transition notifies the hospital's administrators.
+  // Email failure is audited and does not roll back the committed activation.
+  if (result.previousStatus === "PENDING" && result.tenant.status === "ACTIVE") {
+    await deliverHospitalActivationEmail(result.tenant);
+  }
+
+  return result.tenant;
 }

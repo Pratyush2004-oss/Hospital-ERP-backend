@@ -209,8 +209,8 @@ beforeAll(async () => {
   );
 
   doctorUserA = (await registerMemberUser(api, tenantId, `doctor-a-${suffix}`, "doctor")).id;
-  doctorUserB = (await createMemberUser(tenantId, `doctor-b-${suffix}`)).id;
-  doctorUserC = (await createMemberUser(tenantId, `doctor-c-${suffix}`)).id;
+  doctorUserB = (await createMemberUser(tenantId, `doctor-b-${suffix}`, "doctor")).id;
+  doctorUserC = (await createMemberUser(tenantId, `doctor-c-${suffix}`, "doctor")).id;
 
   const receptionist = await registerMemberUser(
     api,
@@ -252,7 +252,11 @@ beforeAll(async () => {
     [otherTenantId, otherDepartment, otherBranch],
   );
 
-  const otherDoctorUser = await createMemberUser(otherTenantId, `other-doctor-${suffix}`);
+  const otherDoctorUser = await createMemberUser(
+    otherTenantId,
+    `other-doctor-${suffix}`,
+    "doctor",
+  );
 
   const otherDoctor = await otherApi.post(`${API}/doctors`, {
     body: {
@@ -584,6 +588,58 @@ describe("doctor routes", () => {
       "select current_setting('app.current_tenant_id', true) as tid",
     );
     expect(leaked.rows[0]?.tid ?? "").toBe("");
+  });
+
+  it("lists only eligible active doctor members and blocks role-less profiles", async () => {
+    const candidate = await createMemberUser(tenantId, "eligible-doctor", "doctor");
+    const nonDoctor = await createMemberUser(tenantId, "not-a-doctor", "receptionist");
+
+    const search = await api.get(
+      `${API}/doctors/eligible-members?search=${encodeURIComponent(candidate.email)}`,
+    );
+    expect(search.status).toBe(200);
+    const members = dataOf<{
+      members: Array<{
+        userId: string;
+        membershipId: string;
+        roles: Array<{ slug: string }>;
+      }>;
+    }>(search).members;
+    expect(members.map((member) => member.userId)).toEqual([candidate.id]);
+    expect(members[0]?.roles.some((role) => role.slug === "doctor")).toBe(true);
+    expect(JSON.stringify(search.body)).not.toMatch(/password|token/i);
+
+    const blocked = await api.post(`${API}/doctors`, {
+      body: {
+        userId: nonDoctor.id,
+        doctorCode: "NO-ROLE-DOC",
+        registrationNumber: "NO-ROLE-REG",
+      },
+    });
+    expect(blocked.status).toBe(400);
+
+    const created = await api.post(`${API}/doctors`, {
+      body: {
+        userId: candidate.id,
+        doctorCode: "ELIGIBLE-DOC",
+        registrationNumber: "ELIGIBLE-REG",
+      },
+    });
+    expect(created.status).toBe(201);
+
+    const after = await api.get(
+      `${API}/doctors/eligible-members?search=${encodeURIComponent(candidate.email)}`,
+    );
+    expect(dataOf<{ members: unknown[] }>(after).members).toHaveLength(0);
+
+    const duplicate = await api.post(`${API}/doctors`, {
+      body: {
+        userId: candidate.id,
+        doctorCode: "ELIGIBLE-DOC-2",
+        registrationNumber: "ELIGIBLE-REG-2",
+      },
+    });
+    expect(duplicate.status).toBe(409);
   });
 
   it("soft deletes a doctor", async () => {

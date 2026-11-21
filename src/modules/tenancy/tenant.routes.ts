@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { sendCreated, sendNoContent, sendSuccess } from "../../lib/api-response.js";
+import { AppError } from "../../lib/http-error.js";
 import { requireTenantScope } from "../../lib/request-context.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import {
@@ -9,6 +10,16 @@ import {
 } from "../../middleware/authorization.js";
 import { getValidated, validate } from "../../middleware/validate.js";
 import { csrfProtection, requireAuthenticatedUser } from "../auth/auth.middleware.js";
+import {
+  createStaffInvitation,
+  listStaffInvitations,
+  resendStaffInvitation,
+  revokeStaffInvitation,
+} from "../auth/auth.email.service.js";
+import {
+  staffInvitationParamsSchema,
+  staffInvitationSchema,
+} from "../auth/auth.schemas.js";
 import {
   assignMembershipRoles,
   createRole,
@@ -29,6 +40,7 @@ import {
 } from "../rbac/rbac.schemas.js";
 import {
   getTenantSettings,
+  getUserOnboardingStatus,
   listUserMemberships,
   registerTenant,
   selectTenant,
@@ -66,6 +78,18 @@ tenantRegistrationRouter.get("/memberships", authenticate, async (_req, res) => 
   const memberships = await listUserMemberships(actor.userId);
 
   sendSuccess(res, { memberships });
+});
+
+/**
+ * The signed-in account's own hospital registration status. Authentication is
+ * enough: no tenant scope exists while the hospital is PENDING, and RLS limits
+ * the query to memberships belonging to the caller.
+ */
+tenantRegistrationRouter.get("/onboarding", authenticate, async (_req, res) => {
+  const actor = requireAuthenticatedUser();
+  const onboarding = await getUserOnboardingStatus(actor.userId);
+
+  sendSuccess(res, onboarding);
 });
 
 tenantRegistrationRouter.post(
@@ -130,7 +154,7 @@ tenantScopeRouter.get(
   requirePermission("staff:read"),
   async (_req, res) => {
     const actor = requireTenantScope();
-    const memberships = await listTenantMemberships(actor.tenantId);
+    const memberships = await listTenantMemberships(actor.tenantId, actor.branchIds);
 
     sendSuccess(res, { memberships });
   },
@@ -152,9 +176,98 @@ tenantScopeRouter.put(
       params.membershipId,
       input,
       actor.userId,
+      actor.branchIds,
     );
 
     sendSuccess(res, { membership });
+  },
+);
+
+tenantScopeRouter.get(
+  "/staff/invitations",
+  authenticate,
+  requireTenant,
+  requirePermission("staff:read"),
+  async (_req, res) => {
+    const actor = requireTenantScope();
+    const invitations = await listStaffInvitations(actor.tenantId, actor.branchIds);
+
+    sendSuccess(res, { invitations });
+  },
+);
+
+tenantScopeRouter.post(
+  "/staff/invitations",
+  authenticate,
+  csrfProtection,
+  requireTenant,
+  requirePermission("staff:create"),
+  validate({ body: staffInvitationSchema }),
+  async (req, res) => {
+    const actor = requireTenantScope();
+    const input = getValidated<typeof staffInvitationSchema>(req, "body");
+
+    // Role assignment is a separate privilege from creating an invitation.
+    if (input.roleIds.length > 0 && !actor.permissions.has("staff:assign_role")) {
+      throw AppError.forbidden("You do not have permission to assign roles");
+    }
+
+    const invitation = await createStaffInvitation(
+      actor.tenantId,
+      actor.userId,
+      {
+        email: input.email,
+        fullName: input.fullName,
+        roleIds: input.roleIds,
+        departmentIds: input.departmentIds,
+        branchIds: input.branchIds,
+      },
+      actor.branchIds,
+    );
+
+    sendSuccess(res, { invitation }, 202);
+  },
+);
+
+tenantScopeRouter.post(
+  "/staff/invitations/:invitationId/resend",
+  authenticate,
+  csrfProtection,
+  requireTenant,
+  requirePermission("staff:create"),
+  validate({ params: staffInvitationParamsSchema }),
+  async (req, res) => {
+    const actor = requireTenantScope();
+    const params = getValidated<typeof staffInvitationParamsSchema>(req, "params");
+    const invitation = await resendStaffInvitation(
+      actor.tenantId,
+      params.invitationId,
+      actor.userId,
+      actor.branchIds,
+    );
+
+    sendSuccess(res, { invitation }, 202);
+  },
+);
+
+tenantScopeRouter.post(
+  "/staff/invitations/:invitationId/revoke",
+  authenticate,
+  csrfProtection,
+  requireTenant,
+  requirePermission("staff:create"),
+  validate({ params: staffInvitationParamsSchema }),
+  async (req, res) => {
+    const actor = requireTenantScope();
+    const params = getValidated<typeof staffInvitationParamsSchema>(req, "params");
+    await revokeStaffInvitation(
+      actor.tenantId,
+      params.invitationId,
+      actor.userId,
+      actor.branchIds,
+    );
+
+    sendNoContent(res);
   },
 );
 

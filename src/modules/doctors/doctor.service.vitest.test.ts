@@ -61,6 +61,15 @@ async function createMemberUser(
     [tenantId, userId, status, status === "ACTIVE" ? new Date() : null],
   );
 
+  await getTestAdminPool().query(
+    `insert into membership_roles (tenant_id, tenant_membership_id, role_id)
+     select m.tenant_id, m.id, r.id
+     from tenant_memberships m
+     join roles r on r.tenant_id = m.tenant_id and r.slug = 'doctor'
+     where m.tenant_id = $1 and m.user_id = $2`,
+    [tenantId, userId],
+  );
+
   return userId;
 }
 
@@ -78,6 +87,12 @@ async function createFixture(label: string): Promise<Fixture> {
     `${label} Hospital`,
     `${label}-${suffix}`,
   ]);
+
+  await pool.query(
+    `insert into roles (tenant_id, scope, name, slug, is_system)
+     values ($1, 'HOSPITAL', 'Doctor', 'doctor', true)`,
+    [tenantId],
+  );
 
   await pool.query(
     `insert into branches (id, tenant_id, name, branch_code)
@@ -217,6 +232,14 @@ describe("doctor service", () => {
        values ($1, $2, 'ACTIVE', now())`,
       [other.tenantId, fixture.userId],
     );
+    await getTestAdminPool().query(
+      `insert into membership_roles (tenant_id, tenant_membership_id, role_id)
+       select m.tenant_id, m.id, r.id
+       from tenant_memberships m
+       join roles r on r.tenant_id = m.tenant_id and r.slug = 'doctor'
+       where m.tenant_id = $1 and m.user_id = $2`,
+      [other.tenantId, fixture.userId],
+    );
 
     const elsewhere = await createDoctor(
       other.tenantId,
@@ -265,6 +288,20 @@ describe("doctor service", () => {
 
     await expect(
       createDoctor(fixture.tenantId, newDoctor(fixture, { userId: invitedUserId })),
+    ).rejects.toMatchObject({ statusCode: 400 });
+
+    const noRoleUser = await createMemberUser(fixture.tenantId, "no-doctor-role");
+    await getTestAdminPool().query(
+      `delete from membership_roles
+       where tenant_id = $1
+         and tenant_membership_id = (
+           select id from tenant_memberships where tenant_id = $1 and user_id = $2
+         )`,
+      [fixture.tenantId, noRoleUser],
+    );
+
+    await expect(
+      createDoctor(fixture.tenantId, newDoctor(fixture, { userId: noRoleUser })),
     ).rejects.toMatchObject({ statusCode: 400 });
 
     await expect(

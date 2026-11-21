@@ -140,6 +140,13 @@ export const doctorIdParamsSchema = z.object({
   id: z.uuid("Doctor id must be a UUID"),
 });
 
+/** Active doctor-role members without a profile, used by the Add Doctor flow. */
+export const eligibleDoctorMembersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  search: z.string().trim().max(100).optional(),
+});
+
 export const listDoctorsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -164,3 +171,4 @@ export type UpdateDoctorBranchesBody = z.infer<typeof updateDoctorBranchesSchema
 export type UpdateDoctorStatusBody = z.infer<typeof updateDoctorStatusSchema>;
 export type DoctorIdParams = z.infer<typeof doctorIdParamsSchema>;
 export type ListDoctorsQuery = z.infer<typeof listDoctorsQuerySchema>;
+export type EligibleDoctorMembersQuery = z.infer<typeof eligibleDoctorMembersQuerySchema>;

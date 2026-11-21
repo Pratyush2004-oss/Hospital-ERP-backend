@@ -58,13 +58,62 @@ export const resetPasswordSchema = z.object({
   password: passwordSchema,
 });
 
+/** Non-consuming reset-token inspection for the frontend reset page. */
+export const resetPasswordTokenSchema = z.object({
+  token: z.string().trim().min(20, "Reset token is invalid").max(200, "Reset token is invalid"),
+});
+
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Current password is required").max(128),
   newPassword: passwordSchema,
+});
+
+export const verifyEmailSchema = z.object({
+  token: z.string().trim().min(20, "Verification link is invalid").max(200, "Verification link is invalid"),
+});
+
+export const acceptInvitationSchema = z.object({
+  token: z.string().trim().min(20, "Invitation link is invalid").max(200, "Invitation link is invalid"),
+  fullName: z
+    .string()
+    .trim()
+    .min(2, "Full name must be at least 2 characters")
+    .max(200, "Full name must be at most 200 characters")
+    .optional(),
+  /** Required only when no account exists for the invited email yet. */
+  password: passwordSchema.optional(),
+});
+
+export const staffInvitationSchema = z.object({
+  email: emailSchema,
+  fullName: z
+    .string()
+    .trim()
+    .min(2, "Full name must be at least 2 characters")
+    .max(200, "Full name must be at most 200 characters")
+    .optional(),
+  roleIds: z.array(z.uuid("Role ids must be UUIDs")).max(10).default([]),
+  departmentIds: z.array(z.uuid("Department ids must be UUIDs")).max(20).default([]),
+  branchIds: z.array(z.uuid("Branch ids must be UUIDs")).max(20).default([]),
+});
+
+export const staffInvitationParamsSchema = z.object({
+  invitationId: z.uuid("Invitation id must be a UUID"),
+});
+
+/** Invitation lookup uses a body token, never a URL path, to keep it out of logs. */
+export const invitationDetailsSchema = z.object({
+  token: z.string().trim().min(20, "Invitation link is invalid").max(200, "Invitation link is invalid"),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+export type ResetPasswordTokenInput = z.infer<typeof resetPasswordTokenSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
+export type AcceptInvitationInput = z.infer<typeof acceptInvitationSchema>;
+export type StaffInvitationSchemaInput = z.infer<typeof staffInvitationSchema>;
+export type StaffInvitationParamsInput = z.infer<typeof staffInvitationParamsSchema>;
+export type InvitationDetailsInput = z.infer<typeof invitationDetailsSchema>;

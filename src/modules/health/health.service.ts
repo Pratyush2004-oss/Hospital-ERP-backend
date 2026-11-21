@@ -1,5 +1,5 @@
 import { env, type Env } from "../../config/env.js";
-import { checkDatabaseConnection } from "../../database/index.js";
+import { checkDatabaseConnection, getPool } from "../../database/index.js";
 import {
   checkRedisConnection,
   type RedisHealth,
@@ -31,7 +31,22 @@ export interface HealthStatus {
 
 async function checkDatabase(): Promise<DependencyCheck> {
   try {
-    const latencyMs = await checkDatabaseConnection();
+    const [latencyMs, roleResult] = await Promise.all([
+      checkDatabaseConnection(),
+      getPool().query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "select rolsuper, rolbypassrls from pg_roles where rolname = current_user",
+      ),
+    ]);
+
+    const role = roleResult.rows[0];
+    if (role?.rolsuper || role?.rolbypassrls) {
+      logger.warn(
+        { rolsuper: role.rolsuper, rolbypassrls: role.rolbypassrls },
+        "Database health check rejected: runtime role bypasses RLS",
+      );
+      return { status: "down" };
+    }
+
     return { status: "up", latencyMs: Number(latencyMs.toFixed(2)) };
   } catch (error) {
     logger.warn({ err: error }, "Database health check failed");

@@ -6,6 +6,12 @@ import { getPool } from "../src/database/index.js";
 const app = createApp();
 let restrictedRoleValidation: Promise<void> | null = null;
 
+function isHealthRequest(req: IncomingMessage): boolean {
+  const rawPathname = (req.url ?? "").split("?", 1)[0];
+  const pathname = rawPathname === "/" ? "/" : rawPathname.replace(/\/+$/, "");
+  return pathname === `${env.API_PREFIX}/health`;
+}
+
 async function assertRestrictedRuntimeRole(): Promise<void> {
   if (env.NODE_ENV !== "production") return;
   if (!env.APP_DATABASE_URL) {
@@ -35,6 +41,24 @@ export default async function handler(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  await assertRestrictedRuntimeRole();
+  // Health must remain reachable as a JSON readiness response even when the
+  // runtime database role is misconfigured. It performs the role and
+  // dependency checks itself. Protected API routes retain the fail-fast guard.
+  if (!isHealthRequest(req)) {
+    try {
+      await assertRestrictedRuntimeRole();
+    } catch (error) {
+      res.statusCode = 503;
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          status: "degraded",
+          code: "DATABASE_ROLE_RESTRICTED",
+          message: "API database role configuration is not valid.",
+        }),
+      );
+      return;
+    }
+  }
   app(req, res);
 }

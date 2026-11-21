@@ -1,4 +1,17 @@
-import { and, asc, desc, eq, exists, ilike, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  ilike,
+  inArray,
+  isNull,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import { withTenantTransaction, type DbExecutor } from "../../database/context.js";
 import {
   branches,
@@ -8,6 +21,8 @@ import {
   doctorDepartments,
   doctorSchedules,
   doctors,
+  membershipRoles,
+  roles,
   tenantMemberships,
   users,
 } from "../../database/schema/index.js";
@@ -22,6 +37,8 @@ import type {
   DoctorDto,
   DoctorListResult,
   DoctorSortField,
+  EligibleDoctorMemberFilters,
+  EligibleDoctorMemberListResult,
   ListDoctorsFilters,
   UpdateDoctorInput,
 } from "./doctor.types.js";
@@ -542,6 +559,32 @@ async function assertUserEligibleForDoctor(
       `User membership must be ACTIVE before a doctor profile can be created (current: ${membership.status})`,
     );
   }
+
+  const [doctorRole] = await tx
+    .select({ id: roles.id })
+    .from(membershipRoles)
+    .innerJoin(
+      roles,
+      and(
+        eq(roles.id, membershipRoles.roleId),
+        eq(roles.tenantId, membershipRoles.tenantId),
+      ),
+    )
+    .where(
+      and(
+        eq(membershipRoles.tenantId, tenantId),
+        eq(membershipRoles.tenantMembershipId, membership.id),
+        eq(roles.scope, "HOSPITAL"),
+        eq(roles.slug, "doctor"),
+      ),
+    )
+    .limit(1);
+
+  if (!doctorRole) {
+    throw AppError.badRequest(
+      "User must have the doctor role before a doctor profile can be created",
+    );
+  }
 }
 
 async function assertDepartmentsAssignable(
@@ -828,6 +871,145 @@ export async function createDoctor(
   } catch (error) {
     mapDoctorWriteError(error);
   }
+}
+
+/**
+ * Members the Add Doctor workflow can attach a profile to: ACTIVE membership,
+ * active global account, doctor role, and no existing doctor row (including a
+ * soft-deleted row, because the tenant/user uniqueness constraint still reserves
+ * that membership).
+ */
+export async function listEligibleDoctorMembers(
+  tenantId: string,
+  filters: EligibleDoctorMemberFilters = {},
+): Promise<EligibleDoctorMemberListResult> {
+  const page = Math.max(1, Math.trunc(filters.page ?? 1));
+  const pageSize = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, Math.trunc(filters.pageSize ?? DEFAULT_PAGE_SIZE)),
+  );
+
+  return withTenantTransaction(tenantId, async (tx) => {
+    const conditions = [
+      eq(tenantMemberships.tenantId, tenantId),
+      eq(tenantMemberships.status, "ACTIVE"),
+      eq(users.isActive, true),
+      exists(
+        tx
+          .select({ one: sql`1` })
+          .from(membershipRoles)
+          .innerJoin(
+            roles,
+            and(
+              eq(roles.id, membershipRoles.roleId),
+              eq(roles.tenantId, membershipRoles.tenantId),
+            ),
+          )
+          .where(
+            and(
+              eq(membershipRoles.tenantId, tenantId),
+              eq(membershipRoles.tenantMembershipId, tenantMemberships.id),
+              eq(roles.scope, "HOSPITAL"),
+              eq(roles.slug, "doctor"),
+            ),
+          ),
+      ),
+      notExists(
+        tx
+          .select({ one: sql`1` })
+          .from(doctors)
+          .where(
+            and(
+              eq(doctors.tenantId, tenantId),
+              eq(doctors.userId, tenantMemberships.userId),
+            ),
+          ),
+      ),
+    ];
+
+    if (filters.search) {
+      const pattern = `%${filters.search.trim()}%`;
+      const searchClause = or(ilike(users.fullName, pattern), ilike(users.email, pattern));
+      if (searchClause) conditions.push(searchClause);
+    }
+
+    const where = and(...conditions);
+
+    const [rows, totals] = await Promise.all([
+      tx
+        .select({
+          userId: users.id,
+          membershipId: tenantMemberships.id,
+          fullName: users.fullName,
+          email: users.email,
+          phone: users.phone,
+          joinedAt: tenantMemberships.joinedAt,
+          branchIds: tenantMemberships.branchIds,
+          departmentIds: tenantMemberships.departmentIds,
+        })
+        .from(tenantMemberships)
+        .innerJoin(users, eq(users.id, tenantMemberships.userId))
+        .where(where)
+        .orderBy(asc(users.fullName), asc(tenantMemberships.id))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize),
+      tx
+        .select({ total: sql<number>`count(*)::int` })
+        .from(tenantMemberships)
+        .innerJoin(users, eq(users.id, tenantMemberships.userId))
+        .where(where),
+    ]);
+
+    const membershipIds = rows.map((row) => row.membershipId);
+    const grants = membershipIds.length
+      ? await tx
+          .select({
+            membershipId: membershipRoles.tenantMembershipId,
+            id: roles.id,
+            slug: roles.slug,
+            name: roles.name,
+          })
+          .from(membershipRoles)
+          .innerJoin(
+            roles,
+            and(
+              eq(roles.id, membershipRoles.roleId),
+              eq(roles.tenantId, membershipRoles.tenantId),
+            ),
+          )
+          .where(
+            and(
+              eq(membershipRoles.tenantId, tenantId),
+              inArray(membershipRoles.tenantMembershipId, membershipIds),
+            ),
+          )
+          .orderBy(asc(roles.name))
+      : [];
+
+    const rolesByMembership = new Map<
+      string,
+      { id: string; slug: string; name: string }[]
+    >();
+
+    for (const grant of grants) {
+      const list = rolesByMembership.get(grant.membershipId) ?? [];
+      list.push({ id: grant.id, slug: grant.slug, name: grant.name });
+      rolesByMembership.set(grant.membershipId, list);
+    }
+
+    const total = totals[0]?.total ?? 0;
+
+    return {
+      members: rows.map((row) => ({
+        ...row,
+        roles: rolesByMembership.get(row.membershipId) ?? [],
+      })),
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    };
+  });
 }
 
 export async function listDoctors(

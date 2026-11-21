@@ -56,6 +56,8 @@ export interface MembershipRoleSummary {
   readonly phone: string | null;
   readonly status: string;
   readonly joinedAt: Date | null;
+  readonly branchIds: readonly string[];
+  readonly departmentIds: readonly string[];
   readonly roles: readonly { id: string; slug: string; name: string }[];
 }
 
@@ -369,8 +371,21 @@ export async function setRolePermissions(
   });
 }
 
+/** Empty actor branches mean hospital-wide visibility. */
+function membershipWithinBranchScope(
+  actorBranchIds: readonly string[],
+  membershipBranchIds: readonly string[],
+): boolean {
+  if (actorBranchIds.length === 0) return true;
+  if (membershipBranchIds.length === 0) return false;
+
+  const allowed = new Set(actorBranchIds);
+  return membershipBranchIds.every((branchId) => allowed.has(branchId));
+}
+
 export async function listTenantMemberships(
   tenantId: string,
+  actorBranchIds: readonly string[] = [],
 ): Promise<readonly MembershipRoleSummary[]> {
   return withTenantTransaction(tenantId, async (tx) => {
     const members = await tx
@@ -382,6 +397,8 @@ export async function listTenantMemberships(
         phone: users.phone,
         status: tenantMemberships.status,
         joinedAt: tenantMemberships.joinedAt,
+        branchIds: tenantMemberships.branchIds,
+        departmentIds: tenantMemberships.departmentIds,
       })
       .from(tenantMemberships)
       .innerJoin(users, eq(tenantMemberships.userId, users.id))
@@ -407,10 +424,12 @@ export async function listTenantMemberships(
       rolesByMembership.set(grant.membershipId, list);
     }
 
-    return members.map((member) => ({
-      ...member,
-      roles: rolesByMembership.get(member.id) ?? [],
-    }));
+    return members
+      .filter((member) => membershipWithinBranchScope(actorBranchIds, member.branchIds))
+      .map((member) => ({
+        ...member,
+        roles: rolesByMembership.get(member.id) ?? [],
+      }));
   });
 }
 
@@ -420,6 +439,7 @@ export async function assignMembershipRoles(
   membershipId: string,
   input: AssignMembershipRolesInput,
   assignedBy: string,
+  actorBranchIds: readonly string[] = [],
 ): Promise<MembershipRoleSummary> {
   return withTenantTransaction(tenantId, async (tx) => {
     const [membership] = await tx
@@ -431,6 +451,8 @@ export async function assignMembershipRoles(
         phone: users.phone,
         status: tenantMemberships.status,
         joinedAt: tenantMemberships.joinedAt,
+        branchIds: tenantMemberships.branchIds,
+        departmentIds: tenantMemberships.departmentIds,
       })
       .from(tenantMemberships)
       .innerJoin(users, eq(tenantMemberships.userId, users.id))
@@ -443,6 +465,10 @@ export async function assignMembershipRoles(
       .limit(1);
 
     if (!membership) {
+      throw AppError.notFound("Membership not found");
+    }
+
+    if (!membershipWithinBranchScope(actorBranchIds, membership.branchIds)) {
       throw AppError.notFound("Membership not found");
     }
 

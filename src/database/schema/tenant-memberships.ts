@@ -1,4 +1,12 @@
-import { index, pgTable, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  index,
+  jsonb,
+  pgTable,
+  timestamp,
+  unique,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { createdAt, updatedAt } from "./columns.js";
 import { membershipStatusEnum } from "./enums.js";
 import { tenants } from "./tenants.js";
@@ -19,6 +27,9 @@ export const tenantMemberships = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     status: membershipStatusEnum("status").notNull().default("INVITED"),
+    /** Validated branch/department assignments carried from the invitation. */
+    branchIds: jsonb("branch_ids").$type<string[]>().notNull().default([]),
+    departmentIds: jsonb("department_ids").$type<string[]>().notNull().default([]),
     joinedAt: timestamp("joined_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

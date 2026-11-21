@@ -24,3 +24,6 @@ process.env.AUTH_ACCESS_TOKEN_SECRET =
 process.env.REDIS_URL = process.env.REDIS_URL?.trim() || "redis://localhost:6379";
 process.env.AUTH_LOGIN_RATE_LIMIT_MAX = "5";
 process.env.AUTH_LOGIN_RATE_LIMIT_WINDOW_MS = "60000";
+// Auth mail uses the deterministic in-memory adapter; tests inspect its outbox.
+process.env.AUTH_MAIL_PROVIDER = "mock";
+process.env.AUTH_EMAIL_RESEND_COOLDOWN_SECONDS = "0";

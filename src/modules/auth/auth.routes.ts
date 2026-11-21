@@ -14,13 +14,24 @@ import {
 } from "./auth.cookies.js";
 import { csrfProtection, requireAuthenticatedUser } from "./auth.middleware.js";
 import {
+  acceptInvitationSchema,
   changePasswordSchema,
   forgotPasswordSchema,
+  invitationDetailsSchema,
   loginSchema,
   registerSchema,
   resetPasswordSchema,
+  resetPasswordTokenSchema,
+  verifyEmailSchema,
 } from "./auth.schemas.js";
 import {
+  acceptStaffInvitation,
+  getInvitationDetails,
+  resendEmailVerification,
+  verifyEmailAddress,
+} from "./auth.email.service.js";
+import {
+  buildPasswordResetRequestResponse,
   changePassword,
   getPublicUser,
   listSessions,
@@ -28,6 +39,7 @@ import {
   logout,
   logoutAll,
   refreshSession,
+  inspectPasswordResetToken,
   registerUser,
   requestPasswordReset,
   resetPassword,
@@ -76,6 +88,14 @@ const forgotPasswordRateLimiter = createRateLimiter({
   max: env.AUTH_LOGIN_RATE_LIMIT_MAX,
   keyGenerator: (req) => `forgot|${req.ip ?? req.socket.remoteAddress ?? "unknown"}`,
   message: "Too many password reset requests, please try again later",
+});
+
+/** Public token-consuming endpoints: verification and invitation acceptance. */
+const emailTokenRateLimiter = createRateLimiter({
+  windowMs: env.AUTH_LOGIN_RATE_LIMIT_WINDOW_MS,
+  max: Math.max(20, env.AUTH_LOGIN_RATE_LIMIT_MAX * 2),
+  keyGenerator: (req) => `email-token|${req.ip ?? req.socket.remoteAddress ?? "unknown"}`,
+  message: "Too many email link attempts, please try again later",
 });
 
 authRouter.post(
@@ -153,6 +173,72 @@ authRouter.post(
 );
 
 authRouter.post(
+  "/email/verify",
+  emailTokenRateLimiter,
+  validate({ body: verifyEmailSchema }),
+  async (req, res) => {
+    const input = getValidated<typeof verifyEmailSchema>(req, "body");
+    const result = await verifyEmailAddress(input.token);
+    const user = await getPublicUser(result.userId);
+
+    sendSuccess(res, {
+      user,
+      alreadyVerified: result.alreadyVerified,
+    });
+  },
+);
+
+authRouter.post("/email/resend", authenticate, csrfProtection, async (_req, res) => {
+  const actor = requireAuthenticatedUser();
+  const result = await resendEmailVerification(actor.userId);
+
+  sendSuccess(
+    res,
+    {
+      status: result.status,
+      ...(result.retryAfterSeconds === undefined
+        ? {}
+        : { retryAfterSeconds: result.retryAfterSeconds }),
+      ...(result.expiresAt === undefined ? {} : { expiresAt: result.expiresAt }),
+    },
+    202,
+  );
+});
+
+authRouter.post(
+  "/invitations/details",
+  emailTokenRateLimiter,
+  validate({ body: invitationDetailsSchema }),
+  async (req, res) => {
+    const input = getValidated<typeof invitationDetailsSchema>(req, "body");
+    const invitation = await getInvitationDetails(input.token);
+
+    sendSuccess(res, { invitation });
+  },
+);
+
+authRouter.post(
+  "/invitations/accept",
+  emailTokenRateLimiter,
+  validate({ body: acceptInvitationSchema }),
+  async (req, res) => {
+    const input = getValidated<typeof acceptInvitationSchema>(req, "body");
+    const result = await acceptStaffInvitation(input.token, {
+      fullName: input.fullName,
+      password: input.password,
+    });
+    const user = await getPublicUser(result.userId);
+
+    sendSuccess(res, {
+      user,
+      tenantId: result.tenantId,
+      membershipId: result.membershipId,
+      accountCreated: result.accountCreated,
+    });
+  },
+);
+
+authRouter.post(
   "/forgot-password",
   forgotPasswordRateLimiter,
   validate({ body: forgotPasswordSchema }),
@@ -160,19 +246,29 @@ authRouter.post(
     const input = getValidated<typeof forgotPasswordSchema>(req, "body");
     const result = await requestPasswordReset(input);
 
-    // The response is the same for known and unknown accounts. Outside
-    // production the token is returned because no email provider is wired yet;
-    // production must deliver it by email instead of exposing it to the client.
-    sendSuccess(
-      res,
-      {
-        message: "If an account matches that email or phone number, a reset link has been sent.",
-        ...(env.NODE_ENV !== "production" && result.resetToken
-          ? { resetToken: result.resetToken, expiresAt: result.expiresAt }
-          : {}),
-      },
-      202,
-    );
+    // The response is identical for known and unknown accounts: no delivery
+    // status, token or timing hint. Production never includes token material.
+    // Development additionally returns an explicit safe reset-link action so
+    // the recovery UI can be exercised without an email provider.
+    sendSuccess(res, buildPasswordResetRequestResponse(result), 202);
+  },
+);
+
+authRouter.post(
+  "/reset-password/validate",
+  emailTokenRateLimiter,
+  validate({ body: resetPasswordTokenSchema }),
+  async (req, res) => {
+    const input = getValidated<typeof resetPasswordTokenSchema>(req, "body");
+    const inspection = await inspectPasswordResetToken(input.token);
+
+    sendSuccess(res, {
+      valid: inspection.status === "VALID",
+      status: inspection.status,
+      ...(inspection.expiresAt === null
+        ? {}
+        : { expiresAt: inspection.expiresAt.toISOString() }),
+    });
   },
 );
 

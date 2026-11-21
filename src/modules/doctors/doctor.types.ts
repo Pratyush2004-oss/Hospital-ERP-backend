@@ -76,6 +76,37 @@ export interface DoctorListResult {
   readonly totalPages: number;
 }
 
+/**
+ * An ACTIVE hospital member who holds the doctor role and has no live doctor
+ * profile yet. This is the only membership state that can create a profile
+ * under the ONB-07A invitation lifecycle.
+ */
+export interface EligibleDoctorMember {
+  readonly userId: string;
+  readonly membershipId: string;
+  readonly fullName: string;
+  readonly email: string;
+  readonly phone: string | null;
+  readonly joinedAt: Date | null;
+  readonly branchIds: readonly string[];
+  readonly departmentIds: readonly string[];
+  readonly roles: readonly { id: string; slug: string; name: string }[];
+}
+
+export interface EligibleDoctorMemberFilters {
+  readonly search?: string;
+  readonly page?: number;
+  readonly pageSize?: number;
+}
+
+export interface EligibleDoctorMemberListResult {
+  readonly members: readonly EligibleDoctorMember[];
+  readonly total: number;
+  readonly page: number;
+  readonly pageSize: number;
+  readonly totalPages: number;
+}
+
 /** Input shape for one branch assignment. */
 export interface DoctorBranchAssignmentInput {
   readonly branchId: string;

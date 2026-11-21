@@ -5,6 +5,7 @@ import { getValidated } from "../../middleware/validate.js";
 import {
   createDoctorSchema,
   doctorIdParamsSchema,
+  eligibleDoctorMembersQuerySchema,
   listDoctorsQuerySchema,
   updateDoctorBranchesSchema,
   updateDoctorDepartmentsSchema,
@@ -16,6 +17,7 @@ import {
   deleteDoctor,
   getDoctorById,
   listDoctors,
+  listEligibleDoctorMembers,
   updateDoctor,
   updateDoctorBranches,
   updateDoctorDepartments,
@@ -48,6 +50,25 @@ export const listDoctorsHandler: RequestHandler = async (req, res) => {
   });
 
   sendSuccess(res, { doctors: result.doctors }, 200, {
+    pagination: {
+      page: result.page,
+      pageSize: result.pageSize,
+      total: result.total,
+      totalPages: result.totalPages,
+    },
+  });
+};
+
+export const listEligibleDoctorMembersHandler: RequestHandler = async (req, res) => {
+  const actor = requireTenantScope();
+  const query = getValidated<typeof eligibleDoctorMembersQuerySchema>(req, "query");
+  const result = await listEligibleDoctorMembers(actor.tenantId, {
+    page: query.page,
+    pageSize: query.limit,
+    search: query.search,
+  });
+
+  sendSuccess(res, { members: result.members }, 200, {
     pagination: {
       page: result.page,
       pageSize: result.pageSize,
