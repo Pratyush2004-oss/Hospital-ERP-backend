@@ -9,6 +9,26 @@ function normalizeApiPrefix(prefix: string): string {
   return withLeadingSlash.length > 1 ? withLeadingSlash.replace(/\/+$/, "") : withLeadingSlash;
 }
 
+function resolveRedisUrl(source: NodeJS.ProcessEnv): string | undefined {
+  const directUrl = source.REDIS_URL?.trim();
+  if (directUrl) return directUrl;
+
+  const restUrl = source.UPSTASH_REDIS_REST_URL?.trim() || source.KV_REST_API_URL?.trim();
+  const token = source.UPSTASH_REDIS_REST_TOKEN?.trim() || source.KV_REST_API_TOKEN?.trim();
+  if (!restUrl || !token) return undefined;
+
+  try {
+    const parsed = new URL(restUrl);
+    const redisUrl = new URL("rediss://default@127.0.0.1:6379");
+    redisUrl.hostname = parsed.hostname;
+    redisUrl.port = "6379";
+    redisUrl.password = token;
+    return redisUrl.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
@@ -221,7 +241,9 @@ export type Env = z.infer<typeof envSchema>;
  * Only variables required to start the app are validated here.
  */
 function parseEnv(source: NodeJS.ProcessEnv): Env {
-  const result = envSchema.safeParse(source);
+  const resolvedSource = { ...source };
+  resolvedSource.REDIS_URL ??= resolveRedisUrl(source);
+  const result = envSchema.safeParse(resolvedSource);
 
   if (!result.success) {
     const details = result.error.issues
