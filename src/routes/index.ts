@@ -40,6 +40,11 @@ apiRouter.use("/doctor-schedules", doctorScheduleRouter);
 apiRouter.use("/doctor-breaks", doctorBreakRouter);
 apiRouter.use("/doctor-leaves", doctorLeaveRouter);
 apiRouter.use("/patients", patientRouter);
+// Public patient registration plus the self-service portal. These routes do
+// not require a tenant membership; a patient login is a global account linked
+// to `patient_profiles.user_id`. Mounted at the API root because the public
+// registration path (`/registrations`) and the portal paths share one router.
+apiRouter.use(patientPortalRouter);
 apiRouter.use("/appointments", appointmentRouter);
 apiRouter.use("/audit-logs", auditRouter);
 apiRouter.use("/notifications", notificationRouter);
