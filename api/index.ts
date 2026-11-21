@@ -7,7 +7,7 @@ const app = createApp();
 let restrictedRoleValidation: Promise<void> | null = null;
 
 function isHealthRequest(req: IncomingMessage): boolean {
-  const rawPathname = (req.url ?? "").split("?", 1)[0];
+  const rawPathname = (req.url ?? "").split("?", 1)[0] ?? "";
   const pathname = rawPathname === "/" ? "/" : rawPathname.replace(/\/+$/, "");
   return pathname === `${env.API_PREFIX}/health`;
 }

@@ -31,6 +31,13 @@ export interface HealthStatus {
 
 async function checkDatabase(): Promise<DependencyCheck> {
   try {
+    if (env.NODE_ENV === "production" && !env.APP_DATABASE_URL) {
+      logger.warn(
+        "Database health check rejected: APP_DATABASE_URL is not configured",
+      );
+      return { status: "down" };
+    }
+
     const [latencyMs, roleResult] = await Promise.all([
       checkDatabaseConnection(),
       getPool().query<{ rolsuper: boolean; rolbypassrls: boolean }>(
